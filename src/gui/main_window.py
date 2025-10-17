@@ -804,7 +804,14 @@ class MainWindow(ctk.CTk):
         self.is_shutting_down = False
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.title("DowP")
-        self.iconbitmap(resource_path("DowP-icon.ico"))
+        # Try to set the icon, but don't crash if it doesn't exist
+        try:
+            icon_path = resource_path("DowP-icon.ico")
+            if os.path.exists(icon_path):
+                self.iconbitmap(icon_path)
+        except Exception:
+            # Icon file not found or other error - continue without icon
+            pass
         win_width = 835
         win_height = 900
         screen_width = self.winfo_screenwidth()
@@ -841,6 +848,10 @@ class MainWindow(ctk.CTk):
         self.cancellation_event = threading.Event()
         self.active_operation_thread = None
         self.release_page_url = None
+        
+        # Workspace management
+        self.current_workspace = "single_video"  # "single_video" or "playlist"
+        self.workspace_frames = {}
         self.recode_settings = {}
         self.all_subtitles = {}
         self.current_subtitle_map = {}
@@ -1211,7 +1222,61 @@ class MainWindow(ctk.CTk):
             self.destroy()
 
     def create_widgets(self):
-        url_frame = ctk.CTkFrame(self)
+        # Workspace selector at the top
+        workspace_frame = ctk.CTkFrame(self)
+        workspace_frame.pack(pady=(10, 5), padx=10, fill="x")
+        ctk.CTkLabel(workspace_frame, text="Modo de Trabajo:", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(10, 5))
+        self.workspace_selector = ctk.CTkSegmentedButton(
+            workspace_frame, 
+            values=["Video Individual", "Lista de Reproducción"], 
+            command=self.switch_workspace
+        )
+        self.workspace_selector.set("Video Individual")
+        self.workspace_selector.pack(side="left", padx=5)
+        
+        # Shared download path section
+        self.create_shared_path_section()
+        
+        # Create workspace containers
+        self.create_single_video_workspace()
+        self.create_playlist_workspace()
+        
+        # Show the default workspace
+        self.show_workspace("single_video")
+
+    def create_shared_path_section(self):
+        """Create shared download path section for both workspaces"""
+        # Download path frame
+        download_frame = ctk.CTkFrame(self)
+        download_frame.pack(pady=5, padx=10, fill="x")
+        
+        ctk.CTkLabel(download_frame, text="Carpeta de descarga:").pack(side="left", padx=(10, 5))
+        self.output_path_entry = ctk.CTkEntry(download_frame, placeholder_text="Selecciona una carpeta...")
+        self.output_path_entry.bind("<KeyRelease>", self.update_download_button_state)
+        self.output_path_entry.bind("<Button-3>", lambda e: self.create_entry_context_menu(self.output_path_entry))
+        self.output_path_entry.pack(side="left", fill="x", expand=True, padx=5)
+        
+        # Set default path
+        if hasattr(self, 'default_download_path') and self.default_download_path:
+            self.output_path_entry.insert(0, self.default_download_path)
+        else:
+            try:
+                downloads_path = Path.home() / "Downloads"
+                if downloads_path.exists():
+                    self.output_path_entry.insert(0, str(downloads_path))
+            except Exception:
+                pass
+        
+        self.select_folder_button = ctk.CTkButton(download_frame, text="...", width=40, command=lambda: self.select_output_folder())
+        self.select_folder_button.pack(side="left", padx=(0, 5))
+
+    def create_single_video_workspace(self):
+        """Create the single video download workspace"""
+        workspace_frame = ctk.CTkFrame(self)
+        workspace_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        self.workspace_frames["single_video"] = workspace_frame
+        
+        url_frame = ctk.CTkFrame(workspace_frame)
         url_frame.pack(pady=10, padx=10, fill="x")
         ctk.CTkLabel(url_frame, text="URL del Video:").pack(side="left", padx=(10, 5))
         self.url_entry = ctk.CTkEntry(url_frame, placeholder_text="Pega la URL aquí...")
@@ -1226,7 +1291,7 @@ class MainWindow(ctk.CTk):
         self.original_analyze_fg_color = self.ANALYZE_BTN_COLOR
         self.analyze_button.pack(side="left", padx=(5, 10))
         self.original_analyze_fg_color = self.analyze_button.cget("fg_color")
-        info_frame = ctk.CTkFrame(self)
+        info_frame = ctk.CTkFrame(workspace_frame)
         info_frame.pack(pady=10, padx=10, fill="both", expand=True)
         left_column_container = ctk.CTkFrame(info_frame, fg_color="transparent")
         left_column_container.pack(side="left", padx=10, pady=10, fill="y", anchor="n")
@@ -1570,15 +1635,8 @@ class MainWindow(ctk.CTk):
         self.import_button.pack(fill="x", padx=10, pady=5)
         self.save_in_same_folder_check = ctk.CTkCheckBox(local_import_frame, text="Guardar en la misma carpeta que el original", command=self._on_save_in_same_folder_change)
         self.clear_local_file_button = ctk.CTkButton(local_import_frame, text="Limpiar y Volver a Modo URL", fg_color="gray", hover_color="#555555", command=self.reset_to_url_mode)
-        download_frame = ctk.CTkFrame(self)
+        download_frame = ctk.CTkFrame(workspace_frame)
         download_frame.pack(pady=10, padx=10, fill="x")
-        ctk.CTkLabel(download_frame, text="Carpeta de Salida:").pack(side="left", padx=(10, 5))
-        self.output_path_entry = ctk.CTkEntry(download_frame, placeholder_text="Selecciona una carpeta...")
-        self.output_path_entry.bind("<KeyRelease>", self.update_download_button_state)
-        self.output_path_entry.bind("<Button-3>", lambda e: self.create_entry_context_menu(self.output_path_entry))
-        self.output_path_entry.pack(side="left", fill="x", expand=True, padx=5)
-        self.select_folder_button = ctk.CTkButton(download_frame, text="...", width=40, command=lambda: self.select_output_folder())
-        self.select_folder_button.pack(side="left", padx=(0, 5))
         self.open_folder_button = ctk.CTkButton(download_frame, text="📂", width=40, font=ctk.CTkFont(size=16), command=self.open_last_download_folder, state="disabled")
         self.open_folder_button.pack(side="left", padx=(0, 5))
         ctk.CTkLabel(download_frame, text="Límite (MB/s):").pack(side="left", padx=(10, 5))
@@ -1589,13 +1647,6 @@ class MainWindow(ctk.CTk):
                                      fg_color=self.DOWNLOAD_BTN_COLOR, hover_color=self.DOWNLOAD_BTN_HOVER,
                                      text_color_disabled=self.DISABLED_TEXT_COLOR)
         self.download_button.pack(side="left", padx=(5, 10))
-        if not self.default_download_path:
-            try:
-                downloads_path = Path.home() / "Downloads"
-                if downloads_path.exists() and downloads_path.is_dir():
-                    self.output_path_entry.insert(0, str(downloads_path))
-            except Exception as e:
-                print(f"No se pudo establecer la carpeta de descargas por defecto: {e}")
         progress_frame = ctk.CTkFrame(self)
         progress_frame.pack(pady=(0, 10), padx=10, fill="x")
         self.progress_label = ctk.CTkLabel(progress_frame, text="Esperando...")
@@ -1710,6 +1761,898 @@ class MainWindow(ctk.CTk):
             return self.built_in_presets[preset_name]
             
         return {}
+
+    def create_playlist_workspace(self):
+        """Create the playlist download workspace"""
+        workspace_frame = ctk.CTkFrame(self)
+        workspace_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        self.workspace_frames["playlist"] = workspace_frame
+        
+        # Playlist URL input
+        url_frame = ctk.CTkFrame(workspace_frame)
+        url_frame.pack(pady=10, padx=10, fill="x")
+        ctk.CTkLabel(url_frame, text="URL de la Lista de Reproducción:").pack(side="left", padx=(10, 5))
+        self.playlist_url_entry = ctk.CTkEntry(url_frame, placeholder_text="Pega la URL de la playlist aquí...")
+        self.playlist_url_entry.pack(side="left", fill="x", expand=True, padx=5)
+        self.playlist_url_entry.bind("<Button-3>", lambda e: self.create_entry_context_menu(self.playlist_url_entry))
+        self.playlist_url_entry.bind("<Return>", self.analyze_playlist)
+        self.playlist_url_entry.bind("<KeyRelease>", self.update_playlist_download_button_state)
+        
+        self.analyze_playlist_button = ctk.CTkButton(
+            url_frame, 
+            text="Analizar Playlist", 
+            command=self.analyze_playlist,
+            fg_color="#1f538d", 
+            hover_color="#14375e"
+        )
+        self.analyze_playlist_button.pack(side="left", padx=(5, 10))
+        
+        # Main content area
+        main_content_frame = ctk.CTkFrame(workspace_frame)
+        main_content_frame.pack(pady=10, padx=10, fill="both", expand=True)
+        
+        # Left panel - playlist info and global settings
+        left_panel = ctk.CTkFrame(main_content_frame, fg_color="transparent")
+        left_panel.pack(side="left", padx=(0, 5), pady=10, fill="y", anchor="n")
+        left_panel.configure(width=350)
+        left_panel.pack_propagate(False)
+        
+        # Playlist info section
+        playlist_info_frame = ctk.CTkFrame(left_panel)
+        playlist_info_frame.pack(fill="x", padx=10, pady=(0, 10))
+        
+        ctk.CTkLabel(playlist_info_frame, text="Información de la Playlist", font=ctk.CTkFont(weight="bold")).pack(pady=10)
+        
+        # Playlist thumbnail
+        self.playlist_thumbnail_container = ctk.CTkFrame(playlist_info_frame, width=320, height=180)
+        self.playlist_thumbnail_container.pack(pady=(0, 10), padx=10)
+        self.playlist_thumbnail_container.pack_propagate(False)
+        self.create_playlist_placeholder_label()
+        
+        # Playlist title
+        ctk.CTkLabel(playlist_info_frame, text="Título:", anchor="w").pack(fill="x", padx=10, pady=(0, 5))
+        self.playlist_title_entry = ctk.CTkEntry(playlist_info_frame, font=("", 12))
+        self.playlist_title_entry.pack(fill="x", padx=10, pady=(0, 10))
+        self.playlist_title_entry.bind("<Button-3>", lambda e: self.create_entry_context_menu(self.playlist_title_entry))
+        
+        # Global settings section
+        global_settings_frame = ctk.CTkScrollableFrame(left_panel)
+        global_settings_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        
+        ctk.CTkLabel(global_settings_frame, text="Configuración Global", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 5))
+        
+        # Folder organization option
+        folder_frame = ctk.CTkFrame(global_settings_frame, fg_color="transparent")
+        folder_frame.pack(fill="x", pady=5)
+        
+        self.create_folder_checkbox = ctk.CTkCheckBox(
+            folder_frame, 
+            text="Crear carpeta para la playlist",
+            font=ctk.CTkFont(size=12)
+        )
+        self.create_folder_checkbox.pack(anchor="w", padx=10)
+        self.create_folder_checkbox.select()  # Default to checked (create folder)
+        
+        # Help text for folder option
+        folder_help_text = ctk.CTkLabel(
+            folder_frame, 
+            text="📁 Si está marcado: Crea una carpeta con el nombre de la playlist\n📂 Si no está marcado: Descarga directamente en la carpeta seleccionada",
+            font=ctk.CTkFont(size=10),
+            text_color="gray"
+        )
+        folder_help_text.pack(anchor="w", padx=(30, 10), pady=(0, 5))
+        
+        # Global quality
+        quality_frame = ctk.CTkFrame(global_settings_frame, fg_color="transparent")
+        quality_frame.pack(fill="x", pady=5)
+        quality_frame.grid_columnconfigure(1, weight=1)
+        
+        ctk.CTkLabel(quality_frame, text="Calidad:").grid(row=0, column=0, padx=(0, 10), pady=5, sticky="w")
+        self.global_quality_menu = ctk.CTkOptionMenu(
+            quality_frame, 
+            values=["Mejor disponible", "720p", "480p", "360p", "Audio solamente"],
+            command=self.on_global_quality_change
+        )
+        self.global_quality_menu.grid(row=0, column=1, pady=5, sticky="ew")
+        
+        # Global format
+        format_frame = ctk.CTkFrame(global_settings_frame, fg_color="transparent")
+        format_frame.pack(fill="x", pady=5)
+        format_frame.grid_columnconfigure(1, weight=1)
+        
+        ctk.CTkLabel(format_frame, text="Formato:").grid(row=0, column=0, padx=(0, 10), pady=5, sticky="w")
+        self.global_format_menu = ctk.CTkOptionMenu(
+            format_frame, 
+            values=["MP4", "WebM", "MKV", "MP3 (Alta Calidad)", "MP3 (Media Calidad)", "M4A (Alta Calidad)", "M4A (Media Calidad)", "Audio solamente"],
+            command=self.on_global_format_change
+        )
+        self.global_format_menu.grid(row=0, column=1, pady=5, sticky="ew")
+        
+        # Cookies configuration (same as single video workspace)
+        cookies_frame = ctk.CTkFrame(global_settings_frame)
+        cookies_frame.pack(fill="x", pady=5)
+        
+        ctk.CTkLabel(cookies_frame, text="Cookies", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 5))
+        
+        self.playlist_cookie_mode_menu = ctk.CTkOptionMenu(
+            cookies_frame, 
+            values=["No usar", "Archivo Manual...", "Desde Navegador"], 
+            command=self.on_playlist_cookie_mode_change
+        )
+        self.playlist_cookie_mode_menu.pack(fill="x", padx=10, pady=(0, 5))
+        
+        # Manual cookie file frame
+        self.playlist_manual_cookie_frame = ctk.CTkFrame(cookies_frame, fg_color="transparent")
+        self.playlist_cookie_path_entry = ctk.CTkEntry(
+            self.playlist_manual_cookie_frame, 
+            placeholder_text="Ruta al archivo cookies.txt..."
+        )
+        self.playlist_cookie_path_entry.pack(fill="x")
+        self.playlist_cookie_path_entry.bind("<Button-3>", lambda e: self.create_entry_context_menu(self.playlist_cookie_path_entry))
+        self.playlist_select_cookie_file_button = ctk.CTkButton(
+            self.playlist_manual_cookie_frame, 
+            text="Elegir Archivo...", 
+            command=self.select_playlist_cookie_file
+        )
+        self.playlist_select_cookie_file_button.pack(fill="x", pady=(5, 0))
+        
+        # Browser options frame
+        self.playlist_browser_options_frame = ctk.CTkFrame(cookies_frame, fg_color="transparent")
+        ctk.CTkLabel(self.playlist_browser_options_frame, text="Navegador:").pack(padx=10, pady=(5, 0), anchor="w")
+        self.playlist_browser_var = ctk.StringVar(value="firefox")
+        self.playlist_browser_menu = ctk.CTkOptionMenu(
+            self.playlist_browser_options_frame, 
+            values=["chrome", "firefox", "edge", "opera", "vivaldi", "brave"], 
+            variable=self.playlist_browser_var
+        )
+        self.playlist_browser_menu.pack(fill="x", padx=10)
+        ctk.CTkLabel(self.playlist_browser_options_frame, text="Perfil (Opcional):").pack(padx=10, pady=(5, 0), anchor="w")
+        self.playlist_browser_profile_entry = ctk.CTkEntry(
+            self.playlist_browser_options_frame, 
+            placeholder_text="Ej: Default, Profile 1"
+        )
+        self.playlist_browser_profile_entry.bind("<Button-3>", lambda e: self.create_entry_context_menu(self.playlist_browser_profile_entry))
+        self.playlist_browser_profile_entry.pack(fill="x", padx=10)
+        
+        # Cookie help text
+        cookie_help_text = ctk.CTkLabel(
+            cookies_frame, 
+            text="💡 Si falla la extracción automática, usa 'Archivo Manual' con cookies.txt",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        cookie_help_text.pack(pady=(5, 5))
+        
+        # Test cookies button
+        self.test_playlist_cookies_button = ctk.CTkButton(
+            cookies_frame,
+            text="🧪 Probar Cookies",
+            command=self.test_playlist_cookie_extraction,
+            fg_color="#1f538d",
+            hover_color="#14375e",
+            height=25
+        )
+        self.test_playlist_cookies_button.pack(fill="x", padx=10, pady=(0, 10))
+        
+        # Apply to all button
+        self.apply_global_button = ctk.CTkButton(
+            global_settings_frame,
+            text="Aplicar a Todos los Videos",
+            command=self.apply_global_settings,
+            fg_color="#2b5a2b",
+            hover_color="#1e3f1e"
+        )
+        self.apply_global_button.pack(fill="x", pady=10)
+        
+        # Right panel - video list with individual configurations
+        right_panel = ctk.CTkFrame(main_content_frame)
+        right_panel.pack(side="right", fill="both", expand=True, padx=(5, 0), pady=10)
+        
+        # Video list header
+        header_frame = ctk.CTkFrame(right_panel, fg_color="transparent")
+        header_frame.pack(fill="x", padx=10, pady=(10, 5))
+        
+        ctk.CTkLabel(header_frame, text="Videos de la Playlist", font=ctk.CTkFont(size=16, weight="bold")).pack(side="left")
+        
+        # Select all/none buttons
+        select_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
+        select_frame.pack(side="right")
+        
+        self.select_all_button = ctk.CTkButton(select_frame, text="Seleccionar Todo", command=self.select_all_videos, width=100)
+        self.select_all_button.pack(side="left", padx=(0, 5))
+        
+        self.select_none_button = ctk.CTkButton(select_frame, text="Deseleccionar Todo", command=self.deselect_all_videos, width=100)
+        self.select_none_button.pack(side="left")
+        
+        # Video list scrollable frame
+        self.video_list_frame = ctk.CTkScrollableFrame(right_panel)
+        self.video_list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        
+        # Download controls frame
+        download_controls_frame = ctk.CTkFrame(workspace_frame)
+        download_controls_frame.pack(pady=10, padx=10, fill="x")
+        
+        # Download button
+        self.playlist_download_button = ctk.CTkButton(
+            download_controls_frame, 
+            text="Descargar seleccionados", 
+            command=self.start_playlist_download,
+            fg_color="#2b5a2b", 
+            hover_color="#1e3f1e",
+            state="disabled"
+        )
+        self.playlist_download_button.pack(side="left", padx=(0, 10), pady=10)
+        
+        # Cancel button (hidden initially)
+        self.playlist_cancel_button = ctk.CTkButton(
+            download_controls_frame,
+            text="Cancelar Descarga",
+            command=self.cancel_playlist_download,
+            fg_color="#dc3545",
+            hover_color="#c82333",
+            state="disabled"
+        )
+        self.playlist_cancel_button.pack(side="left", pady=10)
+        
+        # Progress bar (hidden initially)
+        self.playlist_progress_frame = ctk.CTkFrame(workspace_frame)
+        self.playlist_progress_frame.pack(pady=5, padx=10, fill="x")
+        
+        self.playlist_progress_label = ctk.CTkLabel(
+            self.playlist_progress_frame,
+            text="",
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.playlist_progress_label.pack(pady=(10, 5))
+        
+        self.playlist_progress_bar = ctk.CTkProgressBar(self.playlist_progress_frame)
+        self.playlist_progress_bar.pack(pady=(0, 10), padx=10, fill="x")
+        self.playlist_progress_bar.set(0)
+        
+        # Initially hide progress frame
+        self.playlist_progress_frame.pack_forget()
+        
+        # Initialize playlist data
+        self.playlist_videos = []
+        self.playlist_info = None
+        self.playlist_download_cancelled = False
+
+    def switch_workspace(self, workspace_name):
+        """Switch between different workspaces"""
+        if workspace_name == "Video Individual":
+            self.current_workspace = "single_video"
+            self.show_workspace("single_video")
+        elif workspace_name == "Lista de Reproducción":
+            self.current_workspace = "playlist"
+            self.show_workspace("playlist")
+
+    def show_workspace(self, workspace_name):
+        """Show the specified workspace and hide others"""
+        # Hide all workspace frames first
+        for name, frame in self.workspace_frames.items():
+            frame.pack_forget()
+        
+        # Show only the selected workspace
+        if workspace_name in self.workspace_frames:
+            self.workspace_frames[workspace_name].pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # Update current workspace
+        self.current_workspace = workspace_name
+
+    def create_playlist_placeholder_label(self):
+        """Create placeholder label for playlist thumbnail"""
+        self.playlist_placeholder_label = ctk.CTkLabel(
+            self.playlist_thumbnail_container, 
+            text="📁\n\nSin playlist\nseleccionada", 
+            font=ctk.CTkFont(size=16), 
+            text_color="gray"
+        )
+        self.playlist_placeholder_label.pack(expand=True)
+
+    def analyze_playlist(self):
+        """Analyze the playlist URL and get information"""
+        playlist_url = self.playlist_url_entry.get().strip()
+        if not playlist_url:
+            messagebox.showerror("Error", "Por favor ingresa una URL de playlist")
+            return
+        
+        # Update button state
+        self.analyze_playlist_button.configure(text="Analizando...", state="disabled")
+        
+        # Start analysis in a separate thread
+        threading.Thread(target=self._analyze_playlist_thread, args=(playlist_url,), daemon=True).start()
+
+    def _analyze_playlist_thread(self, playlist_url):
+        """Analyze playlist in a separate thread"""
+        try:
+            # Use yt-dlp to get detailed playlist info with thumbnails
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False,  # Get detailed info for each video
+                'writeinfojson': False,
+                'writethumbnail': False,
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(playlist_url, download=False)
+                
+                # Update UI in main thread
+                self.after(0, self._update_playlist_info, info)
+                
+        except Exception as e:
+            error_msg = f"Error al analizar la playlist: {str(e)}"
+            self.after(0, self._show_playlist_error, error_msg)
+        finally:
+            self.after(0, self._reset_playlist_analyze_button)
+
+    def _update_playlist_info(self, info):
+        """Update playlist information in the UI"""
+        try:
+            # Store playlist info
+            self.playlist_info = info
+            
+            # Update playlist title
+            playlist_title = info.get('title', 'Playlist sin título')
+            self.playlist_title_entry.delete(0, 'end')
+            self.playlist_title_entry.insert(0, playlist_title)
+            
+            # Clear existing video list
+            for widget in self.video_list_frame.winfo_children():
+                widget.destroy()
+            
+            # Get video entries
+            entries = info.get('entries', [])
+            self.playlist_videos = []
+            
+            # Create video entries with thumbnails and individual settings
+            for i, entry in enumerate(entries):
+                video_info = self._create_video_entry(entry, i)
+                self.playlist_videos.append(video_info)
+            
+            # Update download button state
+            self.update_playlist_download_button_state()
+            
+        except Exception as e:
+            self._show_playlist_error(f"Error al procesar información: {str(e)}")
+
+    def _create_video_entry(self, video_data, index):
+        """Create a video entry with thumbnail and configuration options"""
+        # Main video frame
+        video_frame = ctk.CTkFrame(self.video_list_frame)
+        video_frame.pack(fill="x", padx=5, pady=5)
+        
+        # Video info container
+        video_info = {
+            'frame': video_frame,
+            'data': video_data,
+            'index': index,
+            'selected': True,
+            'quality': "Mejor disponible",
+            'format': "MP4"
+        }
+        
+        # Top row - checkbox, thumbnail, title, duration
+        top_frame = ctk.CTkFrame(video_frame, fg_color="transparent")
+        top_frame.pack(fill="x", padx=10, pady=5)
+        
+        # Checkbox
+        checkbox_var = ctk.BooleanVar(value=True)
+        checkbox = ctk.CTkCheckBox(top_frame, text="", variable=checkbox_var, width=20, 
+                                 command=self.update_playlist_download_button_state)
+        checkbox.pack(side="left", padx=(0, 10))
+        video_info['checkbox'] = checkbox
+        video_info['checkbox_var'] = checkbox_var
+        
+        # Thumbnail
+        thumbnail_frame = ctk.CTkFrame(top_frame, width=120, height=68)
+        thumbnail_frame.pack(side="left", padx=(0, 10))
+        thumbnail_frame.pack_propagate(False)
+        
+        # Load thumbnail
+        thumbnail_label = ctk.CTkLabel(thumbnail_frame, text="📹", font=ctk.CTkFont(size=24))
+        thumbnail_label.pack(expand=True)
+        video_info['thumbnail_label'] = thumbnail_label
+        
+        # Load thumbnail image in background
+        threading.Thread(target=self._load_video_thumbnail, args=(video_data, thumbnail_label), daemon=True).start()
+        
+        # Title and duration
+        info_frame = ctk.CTkFrame(top_frame, fg_color="transparent")
+        info_frame.pack(side="left", fill="x", expand=True)
+        
+        # Title
+        title = video_data.get('title', f'Video {index + 1}')
+        title_label = ctk.CTkLabel(info_frame, text=title, font=ctk.CTkFont(weight="bold"), anchor="w")
+        title_label.pack(fill="x", pady=(0, 5))
+        video_info['title_label'] = title_label
+        
+        # Duration
+        duration = video_data.get('duration', 0)
+        duration_str = self._format_duration(duration) if duration else "Duración desconocida"
+        duration_label = ctk.CTkLabel(info_frame, text=duration_str, text_color="gray", anchor="w")
+        duration_label.pack(fill="x")
+        video_info['duration_label'] = duration_label
+        
+        # Configuration row
+        config_frame = ctk.CTkFrame(video_frame, fg_color="transparent")
+        config_frame.pack(fill="x", padx=10, pady=(0, 10))
+        config_frame.grid_columnconfigure((1, 3), weight=1)
+        
+        # Quality selection
+        ctk.CTkLabel(config_frame, text="Calidad:").grid(row=0, column=0, padx=(0, 5), pady=5, sticky="w")
+        quality_menu = ctk.CTkOptionMenu(
+            config_frame,
+            values=["Mejor disponible", "720p", "480p", "360p", "Audio solamente"],
+            width=120,
+            command=lambda quality: self._on_quality_change(quality, format_menu)
+        )
+        quality_menu.grid(row=0, column=1, padx=(0, 10), pady=5, sticky="ew")
+        video_info['quality_menu'] = quality_menu
+        
+        # Format selection
+        ctk.CTkLabel(config_frame, text="Formato:").grid(row=0, column=2, padx=(0, 5), pady=5, sticky="w")
+        format_menu = ctk.CTkOptionMenu(
+            config_frame,
+            values=["MP4", "WebM", "MKV", "MP3 (Alta Calidad)", "MP3 (Media Calidad)", "M4A (Alta Calidad)", "M4A (Media Calidad)", "Audio solamente"],
+            width=100
+        )
+        format_menu.grid(row=0, column=3, pady=5, sticky="ew")
+        video_info['format_menu'] = format_menu
+        
+        # Add command to format menu to auto-set quality when "Audio solamente" is selected
+        def on_format_change(format_type):
+            if format_type == "Audio solamente":
+                quality_menu.set("Audio solamente")
+        
+        format_menu.configure(command=on_format_change)
+        
+        return video_info
+
+    def _on_quality_change(self, quality, format_menu):
+        """Handle quality change and update format options accordingly"""
+        if quality == "Audio solamente":
+            # Show only audio formats
+            format_menu.configure(values=["MP3 (Alta Calidad)", "MP3 (Media Calidad)", "M4A (Alta Calidad)", "M4A (Media Calidad)", "Audio solamente"])
+            # Auto-select MP3 (Alta Calidad) if current format is video
+            current_format = format_menu.get()
+            if current_format in ["MP4", "WebM", "MKV"]:
+                format_menu.set("MP3 (Alta Calidad)")
+        else:
+            # Show all formats including video formats
+            format_menu.configure(values=["MP4", "WebM", "MKV", "MP3 (Alta Calidad)", "MP3 (Media Calidad)", "M4A (Alta Calidad)", "M4A (Media Calidad)", "Audio solamente"])
+            # Auto-select MP4 if current format is audio-only
+            current_format = format_menu.get()
+            if current_format in ["MP3 (Alta Calidad)", "MP3 (Media Calidad)", "M4A (Alta Calidad)", "M4A (Media Calidad)", "Audio solamente"]:
+                format_menu.set("MP4")
+
+    def _load_video_thumbnail(self, video_data, thumbnail_label):
+        """Load video thumbnail in background thread"""
+        try:
+            thumbnail_url = video_data.get('thumbnail')
+            if thumbnail_url:
+                response = requests.get(thumbnail_url, timeout=10)
+                if response.status_code == 200:
+                    image = Image.open(BytesIO(response.content))
+                    # Resize to fit thumbnail frame
+                    image = image.resize((120, 68), Image.Resampling.LANCZOS)
+                    photo = ctk.CTkImage(light_image=image, dark_image=image, size=(120, 68))
+                    
+                    # Update UI in main thread
+                    self.after(0, lambda: thumbnail_label.configure(image=photo, text=""))
+        except Exception as e:
+            print(f"Error loading thumbnail: {e}")
+
+    def _format_duration(self, seconds):
+        """Format duration in seconds to HH:MM:SS format"""
+        if not seconds:
+            return "0:00"
+        
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+        
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        else:
+            return f"{minutes}:{secs:02d}"
+
+    def _show_playlist_error(self, error_msg):
+        """Show error message for playlist analysis or download"""
+        messagebox.showerror("Error", error_msg)
+        # Clear video list on analysis error
+        for widget in self.video_list_frame.winfo_children():
+            widget.destroy()
+        # Hide progress controls on download error
+        self.playlist_progress_frame.pack_forget()
+        self.playlist_download_button.configure(state="normal")
+        self.playlist_cancel_button.configure(state="disabled")
+
+    def _reset_playlist_analyze_button(self):
+        """Reset the analyze button state"""
+        self.analyze_playlist_button.configure(text="Analizar Playlist", state="normal")
+
+    def update_playlist_download_button_state(self):
+        """Update playlist download button state based on selected videos"""
+        if not self.playlist_videos:
+            self.playlist_download_button.configure(state="disabled")
+            return
+        
+        # Check if any videos are selected
+        selected_count = sum(1 for video in self.playlist_videos if video['checkbox_var'].get())
+        if selected_count > 0:
+            self.playlist_download_button.configure(state="normal")
+        else:
+            self.playlist_download_button.configure(state="disabled")
+
+    def on_global_quality_change(self, quality):
+        """Handle global quality selection change"""
+        if quality == "Audio solamente":
+            # Show only audio formats in global format menu
+            self.global_format_menu.configure(values=["MP3 (Alta Calidad)", "MP3 (Media Calidad)", "M4A (Alta Calidad)", "M4A (Media Calidad)", "Audio solamente"])
+            # Auto-select MP3 (Alta Calidad) if current format is video
+            current_format = self.global_format_menu.get()
+            if current_format in ["MP4", "WebM", "MKV"]:
+                self.global_format_menu.set("MP3 (Alta Calidad)")
+        else:
+            # Show all formats including video formats
+            self.global_format_menu.configure(values=["MP4", "WebM", "MKV", "MP3 (Alta Calidad)", "MP3 (Media Calidad)", "M4A (Alta Calidad)", "M4A (Media Calidad)", "Audio solamente"])
+            # Auto-select MP4 if current format is audio-only
+            current_format = self.global_format_menu.get()
+            if current_format in ["MP3 (Alta Calidad)", "MP3 (Media Calidad)", "M4A (Alta Calidad)", "M4A (Media Calidad)", "Audio solamente"]:
+                self.global_format_menu.set("MP4")
+        pass  # Will be applied when "Apply to All" is clicked
+
+    def on_playlist_cookie_mode_change(self, mode):
+        """Handle playlist cookie mode change"""
+        if mode == "Archivo Manual...":
+            self.playlist_manual_cookie_frame.pack(fill="x", padx=10, pady=(0, 5))
+            self.playlist_browser_options_frame.pack_forget()
+        elif mode == "Desde Navegador":
+            self.playlist_browser_options_frame.pack(fill="x", padx=10, pady=(0, 5))
+            self.playlist_manual_cookie_frame.pack_forget()
+        else:  # "No usar"
+            self.playlist_manual_cookie_frame.pack_forget()
+            self.playlist_browser_options_frame.pack_forget()
+    
+    def test_playlist_cookie_extraction(self):
+        """Test cookie extraction for playlist downloads"""
+        cookie_mode = self.playlist_cookie_mode_menu.get()
+        
+        if cookie_mode == "No usar":
+            messagebox.showinfo("Cookies", "Modo sin cookies seleccionado.")
+            return
+        
+        if cookie_mode == "Archivo Manual...":
+            cookie_file = self.playlist_cookie_path_entry.get()
+            if not cookie_file:
+                messagebox.showwarning("Cookies", "Por favor selecciona un archivo de cookies.")
+                return
+            
+            if not os.path.exists(cookie_file):
+                messagebox.showerror("Cookies", f"El archivo de cookies no existe:\n{cookie_file}")
+                return
+            
+            messagebox.showinfo("Cookies", f"Archivo de cookies válido:\n{cookie_file}")
+            return
+        
+        # Test browser cookie extraction
+        try:
+            browser_arg = self.playlist_browser_var.get()
+            profile = self.playlist_browser_profile_entry.get()
+            if profile:
+                browser_arg += f":{profile}"
+            
+            # Test with a simple yt-dlp call
+            import yt_dlp
+            test_opts = {
+                'cookiesfrombrowser': (browser_arg,),
+                'quiet': True,
+                'no_warnings': True,
+            }
+            
+            with yt_dlp.YoutubeDL(test_opts) as ydl:
+                # Just test cookie extraction, don't download anything
+                pass
+            
+            messagebox.showinfo("Cookies", f"✅ Extracción de cookies exitosa desde {self.playlist_browser_var.get()}")
+            
+        except Exception as e:
+            error_msg = str(e)
+            if "Could not copy" in error_msg or "Failed to decrypt" in error_msg:
+                messagebox.showwarning(
+                    "Cookies", 
+                    f"❌ No se pudieron extraer cookies automáticamente.\n\n"
+                    f"Error: {error_msg}\n\n"
+                    f"💡 Soluciones:\n"
+                    f"• Cierra el navegador completamente\n"
+                    f"• Usa 'Archivo Manual' con cookies.txt\n"
+                    f"• Prueba con otro navegador"
+                )
+            else:
+                messagebox.showerror("Cookies", f"Error inesperado:\n{error_msg}")
+
+    def select_playlist_cookie_file(self):
+        """Select cookie file for playlist downloads"""
+        file_path = filedialog.askopenfilename(
+            title="Seleccionar archivo de cookies",
+            filetypes=[("Archivos de texto", "*.txt"), ("Todos los archivos", "*.*")]
+        )
+        if file_path:
+            self.playlist_cookie_path_entry.delete(0, 'end')
+            self.playlist_cookie_path_entry.insert(0, file_path)
+
+    def on_global_format_change(self, format_type):
+        """Handle global format selection change"""
+        # Auto-set quality to "Audio solamente" when format is audio-only
+        if format_type in ["MP3 (Alta Calidad)", "MP3 (Media Calidad)", "M4A (Alta Calidad)", "M4A (Media Calidad)", "Audio solamente"]:
+            self.global_quality_menu.set("Audio solamente")
+        pass  # Will be applied when "Apply to All" is clicked
+
+    def apply_global_settings(self):
+        """Apply global settings to all videos"""
+        if not self.playlist_videos:
+            return
+        
+        global_quality = self.global_quality_menu.get()
+        global_format = self.global_format_menu.get()
+        
+        for video in self.playlist_videos:
+            video['quality_menu'].set(global_quality)
+            video['format_menu'].set(global_format)
+            
+            # Also update the format dropdown options based on quality
+            if global_quality == "Audio solamente":
+                video['format_menu'].configure(values=["MP3 (Alta Calidad)", "MP3 (Media Calidad)", "M4A (Alta Calidad)", "M4A (Media Calidad)", "Audio solamente"])
+            else:
+                video['format_menu'].configure(values=["MP4", "WebM", "MKV", "MP3 (Alta Calidad)", "MP3 (Media Calidad)", "M4A (Alta Calidad)", "M4A (Media Calidad)", "Audio solamente"])
+        
+        messagebox.showinfo("Configuración Aplicada", f"Se aplicó la configuración global a {len(self.playlist_videos)} videos.")
+
+    def select_all_videos(self):
+        """Select all videos for download"""
+        for video in self.playlist_videos:
+            video['checkbox_var'].set(True)
+        self.update_playlist_download_button_state()
+
+    def deselect_all_videos(self):
+        """Deselect all videos"""
+        for video in self.playlist_videos:
+            video['checkbox_var'].set(False)
+        self.update_playlist_download_button_state()
+
+    def select_playlist_output_folder(self):
+        """Select output folder for playlist downloads"""
+        folder = filedialog.askdirectory(title="Seleccionar carpeta para descargar playlist")
+        if folder:
+            self.output_path_entry.delete(0, 'end')
+            self.output_path_entry.insert(0, folder)
+
+    def cancel_playlist_download(self):
+        """Cancel the current playlist download"""
+        self.playlist_download_cancelled = True
+        self.playlist_cancel_button.configure(state="disabled")
+        self.playlist_progress_label.configure(text="Cancelando descarga...")
+
+    def start_playlist_download(self):
+        """Start downloading selected videos from the playlist"""
+        if not self.playlist_videos:
+            messagebox.showerror("Error", "No hay videos para descargar")
+            return
+        
+        # Check if download path is set
+        download_path = self.output_path_entry.get().strip()
+        if not download_path:
+            messagebox.showerror("Error", "Por favor selecciona una carpeta de descarga")
+            return
+        
+        # Get selected videos
+        selected_videos = []
+        for video in self.playlist_videos:
+            if video['checkbox_var'].get():
+                video_config = {
+                    'data': video['data'],
+                    'quality': video['quality_menu'].get(),
+                    'format': video['format_menu'].get(),
+                    'index': video['index']
+                }
+                selected_videos.append(video_config)
+        
+        if not selected_videos:
+            messagebox.showerror("Error", "Por favor selecciona al menos un video para descargar")
+            return
+        
+        # Reset cancellation flag
+        self.playlist_download_cancelled = False
+        
+        # Show progress controls
+        self.playlist_progress_frame.pack(pady=5, padx=10, fill="x")
+        self.playlist_download_button.configure(state="disabled")
+        self.playlist_cancel_button.configure(state="normal")
+        
+        # Start download in a separate thread
+        threading.Thread(
+            target=self._download_selected_videos_thread, 
+            args=(selected_videos, download_path), 
+            daemon=True
+        ).start()
+
+    def _download_selected_videos_thread(self, selected_videos, download_path):
+        """Download selected videos with individual configurations using robust download method"""
+        try:
+            total_videos = len(selected_videos)
+            successful_downloads = 0
+            failed_downloads = []
+            
+            for i, video_config in enumerate(selected_videos):
+                # Check for cancellation
+                if self.playlist_download_cancelled:
+                    self.after(0, self._show_playlist_cancelled)
+                    return
+                
+                try:
+                    # Update progress
+                    video_title = video_config['data'].get('title', f'Video {video_config["index"] + 1}')
+                    self.after(0, self._update_playlist_progress, f"Descargando: {video_title}", 0)
+                    
+                    # Get video URL first
+                    video_url = video_config['data'].get('webpage_url') or video_config['data'].get('url')
+                    
+                    if not video_url:
+                        failed_downloads.append(f"Video {video_config['index'] + 1}: URL no disponible")
+                        continue
+                    
+                    # Configure yt-dlp options for this video
+                    playlist_title = self.playlist_title_entry.get() or "Playlist"
+                    
+                    # Check if user wants to create a folder for the playlist
+                    if self.create_folder_checkbox.get():
+                        # Create folder structure: download_path/playlist_title/video_file
+                        output_template = os.path.join(
+                            download_path,
+                            playlist_title,
+                            f"%(playlist_index)s - %(title)s.%(ext)s"
+                        )
+                    else:
+                        # Download directly to download_path without subfolder
+                        output_template = os.path.join(
+                            download_path,
+                            f"%(playlist_index)s - %(title)s.%(ext)s"
+                        )
+                    
+                    ydl_opts = {
+                        'format': self._get_video_format_string(video_config['quality'], video_config['format']),
+                        'outtmpl': output_template,
+                        'quiet': True,
+                        'no_warnings': True,
+                        'noplaylist': True,  # Ensure single video download
+                        'retries': 2,  # Retry failed downloads
+                        'fragment_retries': 2,  # Retry failed fragments
+                        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+                        'referer': video_url,  # Set referer for better compatibility
+                        'ffmpeg_location': self.ffmpeg_processor.ffmpeg_path,  # Use FFmpeg location
+                    }
+                    
+                    # Add audio-only options if format is audio
+                    if video_config['format'] in ["MP3 (Alta Calidad)", "MP3 (Media Calidad)", "M4A (Alta Calidad)", "M4A (Media Calidad)", "Audio solamente"]:
+                        ydl_opts['extractaudio'] = True
+                        if "MP3" in video_config['format']:
+                            ydl_opts['audioformat'] = 'mp3'
+                        elif "M4A" in video_config['format']:
+                            ydl_opts['audioformat'] = 'm4a'
+                        elif video_config['format'] == "Audio solamente":
+                            # Default to MP3 for "Audio solamente"
+                            ydl_opts['audioformat'] = 'mp3'
+                    
+                    # Add cookies support like single video workspace
+                    cookie_mode = self.playlist_cookie_mode_menu.get()
+                    if cookie_mode == "Archivo Manual..." and self.playlist_cookie_path_entry.get():
+                        ydl_opts['cookiefile'] = self.playlist_cookie_path_entry.get()
+                    elif cookie_mode != "No usar":
+                        try:
+                            browser_arg = self.playlist_browser_var.get()
+                            profile = self.playlist_browser_profile_entry.get()
+                            if profile:
+                                browser_arg += f":{profile}"
+                            ydl_opts['cookiesfrombrowser'] = (browser_arg,)
+                        except Exception as e:
+                            # If cookie extraction fails, continue without cookies
+                            error_msg = str(e)
+                            if "Could not copy" in error_msg or "Failed to decrypt" in error_msg:
+                                print(f"Warning: Cookie extraction failed for {self.playlist_browser_var.get()}: {error_msg}")
+                                print("Continuing download without cookies...")
+                            else:
+                                print(f"Warning: Could not extract cookies from {self.playlist_browser_var.get()}: {e}")
+                            # Remove cookiesfrombrowser option if it fails
+                            if 'cookiesfrombrowser' in ydl_opts:
+                                del ydl_opts['cookiesfrombrowser']
+                    
+                    # Download individual video using the robust download_media method
+                    # Create a progress callback for this specific video
+                    def video_progress_callback(percentage, message):
+                        # Calculate overall progress including this video
+                        video_progress = (i / total_videos) * 100 + (percentage / total_videos)
+                        self.after(0, self._update_playlist_progress, f"{video_title}: {message}", video_progress)
+                    
+                    # Create cancellation event for this video
+                    video_cancellation_event = threading.Event()
+                    if self.playlist_download_cancelled:
+                        video_cancellation_event.set()
+                    
+                    # Use the robust download method
+                    downloaded_filepath = download_media(video_url, ydl_opts, video_progress_callback, video_cancellation_event)
+                    successful_downloads += 1
+                    
+                    # Update final progress for this video
+                    final_progress = ((i + 1) / total_videos) * 100
+                    self.after(0, self._update_playlist_progress, f"Completado: {video_title}", final_progress)
+                        
+                except UserCancelledError as e:
+                    # User cancelled the download
+                    self.after(0, self._show_playlist_cancelled)
+                    return
+                except Exception as e:
+                    failed_downloads.append(f"Video {video_config['index'] + 1}: {str(e)}")
+                    # Continue with next video even if one fails
+            
+            # Show completion message
+            self.after(0, self._show_playlist_completion, successful_downloads, failed_downloads)
+            
+        except Exception as e:
+            error_msg = f"Error al descargar videos: {str(e)}"
+            self.after(0, self._show_playlist_error, error_msg)
+
+    def _get_video_format_string(self, quality, format_type):
+        """Get yt-dlp format string based on quality and format selections"""
+        if format_type in ["MP3 (Alta Calidad)", "M4A (Alta Calidad)", "Audio solamente"]:
+            # For high quality audio downloads, use best available audio quality
+            return 'bestaudio[ext=m4a]/bestaudio/best'
+        elif format_type in ["MP3 (Media Calidad)", "M4A (Media Calidad)"]:
+            # For medium quality audio downloads, use good quality but not maximum
+            return 'bestaudio[ext=m4a]/bestaudio[abr<=192]/bestaudio/best'
+        
+        if quality == "Mejor disponible":
+            return 'best'
+        elif quality == "720p":
+            return 'best[height<=720]'
+        elif quality == "480p":
+            return 'best[height<=480]'
+        elif quality == "360p":
+            return 'best[height<=360]'
+        else:
+            return 'best'
+
+    def _update_playlist_progress(self, text, progress):
+        """Update playlist download progress"""
+        self.playlist_progress_label.configure(text=text)
+        self.playlist_progress_bar.set(progress / 100)
+
+    def _show_playlist_cancelled(self):
+        """Show cancellation message"""
+        self.playlist_progress_label.configure(text="Descarga cancelada")
+        self.playlist_progress_bar.set(0)
+        self.playlist_download_button.configure(state="normal")
+        self.playlist_cancel_button.configure(state="disabled")
+        self.playlist_progress_frame.pack_forget()
+
+    def _show_playlist_completion(self, successful_downloads, failed_downloads):
+        """Show completion message for playlist download"""
+        # Hide progress controls
+        self.playlist_progress_frame.pack_forget()
+        self.playlist_download_button.configure(state="normal")
+        self.playlist_cancel_button.configure(state="disabled")
+        
+        if failed_downloads:
+            error_msg = f"Descarga completada con errores:\n\n"
+            error_msg += f"✅ Exitosos: {successful_downloads}\n"
+            error_msg += f"❌ Fallidos: {len(failed_downloads)}\n\n"
+            error_msg += "Errores:\n" + "\n".join(failed_downloads[:5])
+            if len(failed_downloads) > 5:
+                error_msg += f"\n... y {len(failed_downloads) - 5} más"
+            messagebox.showwarning("Descarga Completada", error_msg)
+        else:
+            messagebox.showinfo("Completado", f"¡Todos los videos se descargaron exitosamente! ({successful_downloads} videos)")
+
 
     def time_str_to_seconds(self, time_str):
         """Convierte un string HH:MM:SS a segundos."""
