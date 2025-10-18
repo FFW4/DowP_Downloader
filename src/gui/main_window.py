@@ -784,17 +784,160 @@ class MainWindow(ctk.CTk):
             if options.get("mode") == "Solo Audio":
                 abr = info.get('abr', 0)
                 acodec = info.get('acodec', 'N/A').split('.')[0]
-                return f"Audio: ~{abr:.0f} kbps ({acodec})"
+                abr_formatted = self._safe_format_number(abr, "0", 0)
+                return f"Audio: ~{abr_formatted} kbps ({acodec})"
             
             vcodec = info.get('vcodec', 'N/A').split('.')[0]
             resolution = f"{info.get('width')}x{info.get('height')}"
             abr = info.get('abr', 0)
             acodec = info.get('acodec', 'N/A').split('.')[0]
-            return f"Video: {resolution} ({vcodec})  |  Audio: ~{abr:.0f} kbps ({acodec})"
+            abr_formatted = self._safe_format_number(abr, "0", 0)
+            return f"Video: {resolution} ({vcodec})  |  Audio: ~{abr_formatted} kbps ({acodec})"
 
         except Exception as e:
             print(f"ERROR: Falló la simulación de descarga (API Completa): {e}")
             return "No se pudieron obtener los detalles."
+
+    def _get_format_quality_score(self, format_info):
+        """Calculate quality score for video formats to determine the best one."""
+        score = 0
+        
+        # Height is the most important factor
+        height = format_info.get('height', 0)
+        if height >= 2160:  # 4K
+            score += 1000
+        elif height >= 1440:  # 1440p
+            score += 800
+        elif height >= 1080:  # 1080p
+            score += 600
+        elif height >= 720:   # 720p
+            score += 400
+        elif height >= 480:   # 480p
+            score += 200
+        else:
+            score += height  # Lower resolutions get their height as score
+        
+        # Bitrate bonus
+        bitrate = format_info.get('tbr', 0)
+        if bitrate:
+            score += min(bitrate / 10, 100)  # Cap at 100 points
+        
+        # FPS bonus
+        fps = format_info.get('fps', 0)
+        if fps >= 60:
+            score += 50
+        elif fps >= 30:
+            score += 25
+        
+        # Codec preference
+        vcodec = format_info.get('vcodec', '').lower()
+        if 'av1' in vcodec:
+            score += 30
+        elif 'hevc' in vcodec or 'h265' in vcodec:
+            score += 20
+        elif 'h264' in vcodec or 'avc' in vcodec:
+            score += 10
+        
+        return score
+
+    def _get_audio_quality_score(self, format_info):
+        """Calculate quality score for audio formats to determine the best one."""
+        score = 0
+        
+        # Bitrate is the most important factor for audio
+        bitrate = format_info.get('abr', 0)
+        if bitrate:
+            score += bitrate * 2  # Higher bitrate = better quality
+        
+        # Sample rate bonus
+        sample_rate = format_info.get('asr', 0)
+        if sample_rate >= 48000:
+            score += 50
+        elif sample_rate >= 44100:
+            score += 30
+        elif sample_rate >= 22050:
+            score += 10
+        
+        # Codec preference
+        acodec = format_info.get('acodec', '').lower()
+        if 'flac' in acodec or 'alac' in acodec:
+            score += 100  # Lossless formats get highest score
+        elif 'opus' in acodec:
+            score += 50
+        elif 'aac' in acodec:
+            score += 40
+        elif 'mp3' in acodec:
+            score += 20
+        elif 'vorbis' in acodec:
+            score += 30
+        
+        return score
+
+    def _safe_format_number(self, value, default="0", decimal_places=0):
+        """
+        Safely format any value as a number with specified decimal places.
+        Handles None, strings, floats, integers, and invalid values.
+        
+        Args:
+            value: The value to format
+            default: Default string to return if formatting fails
+            decimal_places: Number of decimal places (0 for integers)
+        
+        Returns:
+            Formatted string representation of the number
+        """
+        if value is None:
+            return default
+        
+        try:
+            # Convert to float first to handle strings, ints, and floats
+            float_value = float(value)
+            
+            # Handle special cases
+            if float_value != float_value:  # NaN check
+                return default
+            
+            # Handle infinity
+            if float_value == float('inf') or float_value == float('-inf'):
+                return default
+            
+            # Format with specified decimal places
+            if decimal_places == 0:
+                return f"{float_value:.0f}"
+            else:
+                return f"{float_value:.{decimal_places}f}"
+                
+        except (ValueError, TypeError, OverflowError, AttributeError):
+            return default
+
+    def _enhance_soundcloud_info(self, info):
+        """
+        Enhance SoundCloud-specific information to handle common issues.
+        This method sanitizes and normalizes data that might cause formatting errors.
+        """
+        if not info:
+            return info
+            
+        # Handle formats list
+        formats = info.get('formats', [])
+        for fmt in formats:
+            # Normalize numeric fields that might be problematic
+            numeric_fields = ['fps', 'abr', 'tbr', 'vbr', 'filesize', 'filesize_approx']
+            for field in numeric_fields:
+                if field in fmt:
+                    value = fmt[field]
+                    if value is not None:
+                        try:
+                            # Ensure it's a valid number
+                            float_val = float(value)
+                            if float_val != float_val:  # NaN check
+                                fmt[field] = None
+                            else:
+                                fmt[field] = float_val
+                        except (ValueError, TypeError):
+                            fmt[field] = None
+        
+        return info
 
     def __init__(self, launch_target=None):
         super().__init__()
@@ -1983,6 +2126,12 @@ class MainWindow(ctk.CTk):
         )
         self.playlist_download_button.pack(side="left", padx=(0, 10), pady=10)
         
+        # Speed limit control
+        ctk.CTkLabel(download_controls_frame, text="Límite (MB/s):").pack(side="left", padx=(5, 5), pady=10)
+        self.playlist_speed_limit_entry = ctk.CTkEntry(download_controls_frame, width=50)
+        self.playlist_speed_limit_entry.bind("<Button-3>", lambda e: self.create_entry_context_menu(self.playlist_speed_limit_entry))
+        self.playlist_speed_limit_entry.pack(side="left", padx=(0, 10), pady=10)
+        
         # Cancel button (hidden initially)
         self.playlist_cancel_button = ctk.CTkButton(
             download_controls_frame,
@@ -2065,6 +2214,8 @@ class MainWindow(ctk.CTk):
     def _analyze_playlist_thread(self, playlist_url):
         """Analyze playlist in a separate thread"""
         try:
+            print(f"DEBUG: Iniciando análisis de playlist: {playlist_url}")
+            
             # Use yt-dlp to get detailed playlist info with thumbnails
             ydl_opts = {
                 'quiet': True,
@@ -2072,16 +2223,73 @@ class MainWindow(ctk.CTk):
                 'extract_flat': False,  # Get detailed info for each video
                 'writeinfojson': False,
                 'writethumbnail': False,
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+                'referer': playlist_url,
             }
             
+            # Add cookie handling for playlist analysis
+            cookie_mode = self.cookie_mode_menu.get()
+            if cookie_mode == "Archivo Manual..." and self.cookie_path_entry.get():
+                ydl_opts['cookiefile'] = self.cookie_path_entry.get()
+            elif cookie_mode != "No usar":
+                browser_arg = self.browser_var.get()
+                profile = self.browser_profile_entry.get()
+                if profile:
+                    browser_arg += f":{profile}"
+                ydl_opts['cookiesfrombrowser'] = (browser_arg,)
+            
+            info = None
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(playlist_url, download=False)
+                try:
+                    info = ydl.extract_info(playlist_url, download=False)
+                    print(f"DEBUG: Análisis de playlist exitoso para: {playlist_url}")
+                except Exception as e:
+                    print(f"DEBUG: Error en análisis inicial de playlist: {e}")
+                    # Try with more permissive options for SoundCloud playlists
+                    if 'soundcloud.com' in playlist_url.lower():
+                        print("DEBUG: Intentando análisis de playlist con opciones específicas para SoundCloud...")
+                        try:
+                            ydl_opts_soundcloud = ydl_opts.copy()
+                            ydl_opts_soundcloud.update({
+                                'extract_flat': False,
+                                'ignoreerrors': True,
+                                'no_warnings': True,
+                                'playlist_items': '1:10',  # Limit to first 10 items for testing
+                            })
+                            info = ydl.extract_info(playlist_url, download=False)
+                            print("DEBUG: Análisis de playlist de SoundCloud exitoso con opciones alternativas")
+                        except Exception as e2:
+                            print(f"DEBUG: Error en análisis alternativo de playlist de SoundCloud: {e2}")
+                            raise e
+                    else:
+                        raise e
+                
+                # Enhance SoundCloud data to prevent formatting errors
+                if info:
+                    try:
+                        info = self._enhance_soundcloud_info(info)
+                        print("DEBUG: Datos de playlist de SoundCloud mejorados exitosamente")
+                        
+                        # Also enhance individual entries if it's a playlist
+                        if info.get('entries'):
+                            print(f"DEBUG: Mejorando {len(info['entries'])} entradas de la playlist")
+                            for i, entry in enumerate(info['entries']):
+                                if entry:
+                                    try:
+                                        info['entries'][i] = self._enhance_soundcloud_info(entry)
+                                    except Exception as entry_error:
+                                        print(f"DEBUG: Error al mejorar entrada {i}: {entry_error}")
+                                        # Continue with original entry if enhancement fails
+                    except Exception as enhance_error:
+                        print(f"DEBUG: Error al mejorar datos de playlist: {enhance_error}")
+                        # Continue with original info if enhancement fails
                 
                 # Update UI in main thread
                 self.after(0, self._update_playlist_info, info)
                 
         except Exception as e:
             error_msg = f"Error al analizar la playlist: {str(e)}"
+            print(f"DEBUG: Error final en análisis de playlist: {error_msg}")
             self.after(0, self._show_playlist_error, error_msg)
         finally:
             self.after(0, self._reset_playlist_analyze_button)
@@ -2089,6 +2297,8 @@ class MainWindow(ctk.CTk):
     def _update_playlist_info(self, info):
         """Update playlist information in the UI"""
         try:
+            print(f"DEBUG: Actualizando información de playlist con {len(info.get('entries', []))} entradas")
+            
             # Store playlist info
             self.playlist_info = info
             
@@ -2105,109 +2315,146 @@ class MainWindow(ctk.CTk):
             entries = info.get('entries', [])
             self.playlist_videos = []
             
+            print(f"DEBUG: Procesando {len(entries)} entradas de la playlist")
+            
             # Create video entries with thumbnails and individual settings
             for i, entry in enumerate(entries):
-                video_info = self._create_video_entry(entry, i)
-                self.playlist_videos.append(video_info)
+                try:
+                    if entry:  # Check if entry is not None
+                        video_info = self._create_video_entry(entry, i)
+                        self.playlist_videos.append(video_info)
+                    else:
+                        print(f"DEBUG: Entrada {i} está vacía, omitiendo")
+                except Exception as entry_error:
+                    print(f"DEBUG: Error al procesar entrada {i}: {entry_error}")
+                    # Continue with other entries
+                    continue
+            
+            print(f"DEBUG: Se procesaron exitosamente {len(self.playlist_videos)} entradas")
             
             # Update download button state
             self.update_playlist_download_button_state()
             
         except Exception as e:
-            self._show_playlist_error(f"Error al procesar información: {str(e)}")
+            error_msg = f"Error al procesar información: {str(e)}"
+            print(f"DEBUG: Error en _update_playlist_info: {error_msg}")
+            self._show_playlist_error(error_msg)
 
     def _create_video_entry(self, video_data, index):
         """Create a video entry with thumbnail and configuration options"""
-        # Main video frame
-        video_frame = ctk.CTkFrame(self.video_list_frame)
-        video_frame.pack(fill="x", padx=5, pady=5)
+        try:
+            # Main video frame
+            video_frame = ctk.CTkFrame(self.video_list_frame)
+            video_frame.pack(fill="x", padx=5, pady=5)
+            
+            # Video info container
+            video_info = {
+                'frame': video_frame,
+                'data': video_data,
+                'index': index,
+                'selected': True,
+                'quality': "Mejor disponible",
+                'format': "MP4"
+            }
+            
+            # Safely get video title
+            title = video_data.get('title', f'Video {index + 1}')
+            if not title or title.strip() == '':
+                title = f'Video {index + 1}'
+            
+            # Safely get duration
+            duration = video_data.get('duration', 0)
+            duration_str = self._format_duration(duration) if duration else "N/A"
+            
+            # Top row - checkbox, thumbnail, title, duration
+            top_frame = ctk.CTkFrame(video_frame, fg_color="transparent")
+            top_frame.pack(fill="x", padx=10, pady=5)
+            
+            # Checkbox
+            checkbox_var = ctk.BooleanVar(value=True)
+            checkbox = ctk.CTkCheckBox(top_frame, text="", variable=checkbox_var, width=20, 
+                                     command=self.update_playlist_download_button_state)
+            checkbox.pack(side="left", padx=(0, 10))
+            video_info['checkbox'] = checkbox
+            video_info['checkbox_var'] = checkbox_var
+            
+            # Thumbnail
+            thumbnail_frame = ctk.CTkFrame(top_frame, width=120, height=68)
+            thumbnail_frame.pack(side="left", padx=(0, 10))
+            thumbnail_frame.pack_propagate(False)
         
-        # Video info container
-        video_info = {
-            'frame': video_frame,
-            'data': video_data,
-            'index': index,
-            'selected': True,
-            'quality': "Mejor disponible",
-            'format': "MP4"
-        }
+            # Load thumbnail
+            thumbnail_label = ctk.CTkLabel(thumbnail_frame, text="📹", font=ctk.CTkFont(size=24))
+            thumbnail_label.pack(expand=True)
+            video_info['thumbnail_label'] = thumbnail_label
+            
+            # Load thumbnail image in background
+            threading.Thread(target=self._load_video_thumbnail, args=(video_data, thumbnail_label), daemon=True).start()
         
-        # Top row - checkbox, thumbnail, title, duration
-        top_frame = ctk.CTkFrame(video_frame, fg_color="transparent")
-        top_frame.pack(fill="x", padx=10, pady=5)
+            # Title and duration
+            info_frame = ctk.CTkFrame(top_frame, fg_color="transparent")
+            info_frame.pack(side="left", fill="x", expand=True)
         
-        # Checkbox
-        checkbox_var = ctk.BooleanVar(value=True)
-        checkbox = ctk.CTkCheckBox(top_frame, text="", variable=checkbox_var, width=20, 
-                                 command=self.update_playlist_download_button_state)
-        checkbox.pack(side="left", padx=(0, 10))
-        video_info['checkbox'] = checkbox
-        video_info['checkbox_var'] = checkbox_var
+            # Title
+            title = video_data.get('title', f'Video {index + 1}')
+            title_label = ctk.CTkLabel(info_frame, text=title, font=ctk.CTkFont(weight="bold"), anchor="w")
+            title_label.pack(fill="x", pady=(0, 5))
+            video_info['title_label'] = title_label
+            
+            # Duration
+            duration = video_data.get('duration', 0)
+            duration_str = self._format_duration(duration) if duration else "Duración desconocida"
+            duration_label = ctk.CTkLabel(info_frame, text=duration_str, text_color="gray", anchor="w")
+            duration_label.pack(fill="x")
+            video_info['duration_label'] = duration_label
+            
+            # Configuration row
+            config_frame = ctk.CTkFrame(video_frame, fg_color="transparent")
+            config_frame.pack(fill="x", padx=10, pady=(0, 10))
+            config_frame.grid_columnconfigure((1, 3), weight=1)
+            
+            # Quality selection
+            ctk.CTkLabel(config_frame, text="Calidad:").grid(row=0, column=0, padx=(0, 5), pady=5, sticky="w")
+            quality_menu = ctk.CTkOptionMenu(
+                config_frame,
+                values=["Mejor disponible", "720p", "480p", "360p", "Audio solamente"],
+                width=120,
+                command=lambda quality: self._on_quality_change(quality, format_menu)
+            )
+            quality_menu.grid(row=0, column=1, padx=(0, 10), pady=5, sticky="ew")
+            video_info['quality_menu'] = quality_menu
+            
+            # Format selection
+            ctk.CTkLabel(config_frame, text="Formato:").grid(row=0, column=2, padx=(0, 5), pady=5, sticky="w")
+            format_menu = ctk.CTkOptionMenu(
+                config_frame,
+                values=["MP4", "WebM", "MKV", "MP3 (Alta Calidad)", "MP3 (Media Calidad)", "M4A (Alta Calidad)", "M4A (Media Calidad)", "Audio solamente"],
+                width=100
+            )
+            format_menu.grid(row=0, column=3, pady=5, sticky="ew")
+            video_info['format_menu'] = format_menu
+            
+            # Add command to format menu to auto-set quality when "Audio solamente" is selected
+            def on_format_change(format_type):
+                if format_type == "Audio solamente":
+                    quality_menu.set("Audio solamente")
+            
+            format_menu.configure(command=on_format_change)
+            
+            return video_info
         
-        # Thumbnail
-        thumbnail_frame = ctk.CTkFrame(top_frame, width=120, height=68)
-        thumbnail_frame.pack(side="left", padx=(0, 10))
-        thumbnail_frame.pack_propagate(False)
-        
-        # Load thumbnail
-        thumbnail_label = ctk.CTkLabel(thumbnail_frame, text="📹", font=ctk.CTkFont(size=24))
-        thumbnail_label.pack(expand=True)
-        video_info['thumbnail_label'] = thumbnail_label
-        
-        # Load thumbnail image in background
-        threading.Thread(target=self._load_video_thumbnail, args=(video_data, thumbnail_label), daemon=True).start()
-        
-        # Title and duration
-        info_frame = ctk.CTkFrame(top_frame, fg_color="transparent")
-        info_frame.pack(side="left", fill="x", expand=True)
-        
-        # Title
-        title = video_data.get('title', f'Video {index + 1}')
-        title_label = ctk.CTkLabel(info_frame, text=title, font=ctk.CTkFont(weight="bold"), anchor="w")
-        title_label.pack(fill="x", pady=(0, 5))
-        video_info['title_label'] = title_label
-        
-        # Duration
-        duration = video_data.get('duration', 0)
-        duration_str = self._format_duration(duration) if duration else "Duración desconocida"
-        duration_label = ctk.CTkLabel(info_frame, text=duration_str, text_color="gray", anchor="w")
-        duration_label.pack(fill="x")
-        video_info['duration_label'] = duration_label
-        
-        # Configuration row
-        config_frame = ctk.CTkFrame(video_frame, fg_color="transparent")
-        config_frame.pack(fill="x", padx=10, pady=(0, 10))
-        config_frame.grid_columnconfigure((1, 3), weight=1)
-        
-        # Quality selection
-        ctk.CTkLabel(config_frame, text="Calidad:").grid(row=0, column=0, padx=(0, 5), pady=5, sticky="w")
-        quality_menu = ctk.CTkOptionMenu(
-            config_frame,
-            values=["Mejor disponible", "720p", "480p", "360p", "Audio solamente"],
-            width=120,
-            command=lambda quality: self._on_quality_change(quality, format_menu)
-        )
-        quality_menu.grid(row=0, column=1, padx=(0, 10), pady=5, sticky="ew")
-        video_info['quality_menu'] = quality_menu
-        
-        # Format selection
-        ctk.CTkLabel(config_frame, text="Formato:").grid(row=0, column=2, padx=(0, 5), pady=5, sticky="w")
-        format_menu = ctk.CTkOptionMenu(
-            config_frame,
-            values=["MP4", "WebM", "MKV", "MP3 (Alta Calidad)", "MP3 (Media Calidad)", "M4A (Alta Calidad)", "M4A (Media Calidad)", "Audio solamente"],
-            width=100
-        )
-        format_menu.grid(row=0, column=3, pady=5, sticky="ew")
-        video_info['format_menu'] = format_menu
-        
-        # Add command to format menu to auto-set quality when "Audio solamente" is selected
-        def on_format_change(format_type):
-            if format_type == "Audio solamente":
-                quality_menu.set("Audio solamente")
-        
-        format_menu.configure(command=on_format_change)
-        
-        return video_info
+        except Exception as e:
+            print(f"DEBUG: Error al crear entrada de video {index}: {e}")
+            # Return a minimal video info if creation fails
+            return {
+                'frame': None,
+                'data': video_data,
+                'index': index,
+                'selected': False,
+                'quality': "Mejor disponible",
+                'format': "MP4",
+                'error': str(e)
+            }
 
     def _on_quality_change(self, quality, format_menu):
         """Handle quality change and update format options accordingly"""
@@ -2248,9 +2495,13 @@ class MainWindow(ctk.CTk):
         if not seconds:
             return "0:00"
         
-        hours = seconds // 3600
-        minutes = (seconds % 3600) // 60
-        secs = seconds % 60
+        # Safely convert to integers to avoid float formatting issues
+        try:
+            hours = int(seconds // 3600)
+            minutes = int((seconds % 3600) // 60)
+            secs = int(seconds % 60)
+        except (ValueError, TypeError):
+            return "0:00"
         
         if hours > 0:
             return f"{hours}:{minutes:02d}:{secs:02d}"
@@ -2272,7 +2523,7 @@ class MainWindow(ctk.CTk):
         """Reset the analyze button state"""
         self.analyze_playlist_button.configure(text="Analizar Playlist", state="normal")
 
-    def update_playlist_download_button_state(self):
+    def update_playlist_download_button_state(self, event=None):
         """Update playlist download button state based on selected videos"""
         if not self.playlist_videos:
             self.playlist_download_button.configure(state="disabled")
@@ -2484,6 +2735,16 @@ class MainWindow(ctk.CTk):
             successful_downloads = 0
             failed_downloads = []
             
+            # Set up global speed limiter (same format as individual workspace)
+            global_speed_limit = None
+            speed_limit_value = self.playlist_speed_limit_entry.get()
+            if speed_limit_value:
+                try:
+                    global_speed_limit = float(speed_limit_value) * 1024 * 1024  # Convert MB/s to bytes/s (same as individual)
+                    print(f"DEBUG: Global speed limit set: {speed_limit_value} MB/s ({global_speed_limit} bytes/s)")
+                except ValueError:
+                    print(f"DEBUG: Invalid global speed limit value: {speed_limit_value}")
+            
             for i, video_config in enumerate(selected_videos):
                 # Check for cancellation
                 if self.playlist_download_cancelled:
@@ -2567,12 +2828,37 @@ class MainWindow(ctk.CTk):
                             if 'cookiesfrombrowser' in ydl_opts:
                                 del ydl_opts['cookiesfrombrowser']
                     
+                    # Apply global speed limit if set (same format as individual workspace)
+                    if global_speed_limit:
+                        ydl_opts['ratelimit'] = global_speed_limit
+                        print(f"DEBUG: Applied global speed limit to video {i+1}: {global_speed_limit} bytes/s")
+                    
+                    # Debug: Print ydl_opts to verify speed limit is included
+                    print(f"DEBUG: ydl_opts for video {i+1}: {ydl_opts}")
+                    
                     # Download individual video using the robust download_media method
                     # Create a progress callback for this specific video
                     def video_progress_callback(percentage, message):
                         # Calculate overall progress including this video
                         video_progress = (i / total_videos) * 100 + (percentage / total_videos)
-                        self.after(0, self._update_playlist_progress, f"{video_title}: {message}", video_progress)
+                        
+                        # Extract speed information from message and convert to MB/s
+                        speed_mb_s = "N/A"
+                        if "a " in message and "KB/s" in message:
+                            try:
+                                # Extract speed from message like "Descargando... 45.2% a 1234.5 KB/s"
+                                speed_part = message.split("a ")[-1].split(" KB/s")[0]
+                                speed_kb_s = float(speed_part)
+                                speed_mb_s = f"{speed_kb_s / 1024:.1f} MB/s"
+                            except (ValueError, IndexError):
+                                speed_mb_s = "N/A"
+                        
+                        # Update progress with speed information
+                        progress_text = f"{video_title}: {message}"
+                        if speed_mb_s != "N/A":
+                            progress_text += f" ({speed_mb_s})"
+                        
+                        self.after(0, self._update_playlist_progress, progress_text, video_progress)
                     
                     # Create cancellation event for this video
                     video_cancellation_event = threading.Event()
@@ -2862,7 +3148,8 @@ class MainWindow(ctk.CTk):
             if bitrate > 1_000_000:
                 return f"{bitrate / 1_000_000:.2f} Mbps"
             elif bitrate > 1_000:
-                return f"{bitrate / 1_000:.0f} kbps"
+                bitrate_formatted = self._safe_format_number(bitrate / 1_000, "0", 0)
+                return f"{bitrate_formatted} kbps"
             return f"{bitrate} bps"
         except (ValueError, TypeError):
             return "Bitrate N/A"
@@ -5121,7 +5408,36 @@ class MainWindow(ctk.CTk):
                     elif mode == "Solo Audio":
                         precise_selector = audio_format_id
                     if not precise_selector:
-                        raise yt_dlp.utils.DownloadError("Selector preciso no válido o no se seleccionaron formatos.")
+                        # Automatic quality selection when no format is specified
+                        print("DEBUG: No se seleccionó formato específico. Seleccionando automáticamente la mejor calidad disponible.")
+                        if mode == "Video+Audio":
+                            if self.video_formats and self.audio_formats:
+                                # Choose the best video format (highest quality)
+                                best_video = max(self.video_formats.items(), key=lambda x: self._get_format_quality_score(x[1]))
+                                best_audio = max(self.audio_formats.items(), key=lambda x: self._get_audio_quality_score(x[1]))
+                                precise_selector = f"{best_video[1]['format_id']}+{best_audio[1]['format_id']}"
+                                print(f"DEBUG: Selección automática - Video: {best_video[0]}, Audio: {best_audio[0]}")
+                            elif self.video_formats:
+                                # Video only, choose best video format
+                                best_video = max(self.video_formats.items(), key=lambda x: self._get_format_quality_score(x[1]))
+                                precise_selector = best_video[1]['format_id']
+                                print(f"DEBUG: Selección automática - Solo Video: {best_video[0]}")
+                            else:
+                                # Fallback to yt-dlp's best selection
+                                precise_selector = 'best[height<=1080]+bestaudio/best[height<=1080]'
+                                print("DEBUG: Selección automática - Usando selector yt-dlp 'best'")
+                        elif mode == "Solo Audio":
+                            if self.audio_formats:
+                                # Choose the best audio format
+                                best_audio = max(self.audio_formats.items(), key=lambda x: self._get_audio_quality_score(x[1]))
+                                precise_selector = best_audio[1]['format_id']
+                                print(f"DEBUG: Selección automática - Solo Audio: {best_audio[0]}")
+                            else:
+                                # Fallback to yt-dlp's best audio
+                                precise_selector = 'bestaudio/best'
+                                print("DEBUG: Selección automática - Usando selector yt-dlp 'bestaudio'")
+                        else:
+                            raise yt_dlp.utils.DownloadError("Selector preciso no válido o no se seleccionaron formatos.")
                     ydl_opts['format'] = precise_selector
                     print(f"DEBUG: PASO 1: Intentando con selector preciso: {precise_selector}")
                     downloaded_filepath = download_media(options["url"], ydl_opts, self.update_progress, self.cancellation_event)
@@ -5505,8 +5821,24 @@ class MainWindow(ctk.CTk):
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     try:
                         info = ydl.extract_info(url, download=False)
+                        print(f"DEBUG: Análisis exitoso para URL: {url}")
                     except Exception as e:
                         print(f"\nError interno de yt-dlp: {e}")
+                        # Try with more permissive options for SoundCloud
+                        if 'soundcloud.com' in url.lower():
+                            print("DEBUG: Intentando análisis con opciones específicas para SoundCloud...")
+                            try:
+                                ydl_opts_soundcloud = ydl_opts.copy()
+                                ydl_opts_soundcloud.update({
+                                    'extract_flat': False,
+                                    'ignoreerrors': True,
+                                    'no_warnings': True,
+                                })
+                                info = ydl.extract_info(url, download=False)
+                                print("DEBUG: Análisis de SoundCloud exitoso con opciones alternativas")
+                            except Exception as e2:
+                                print(f"DEBUG: Error en análisis alternativo de SoundCloud: {e2}")
+                                raise e
             
             if self.cancellation_event.is_set():
                 raise UserCancelledError("Análisis cancelado por el usuario.")
@@ -5584,6 +5916,15 @@ class MainWindow(ctk.CTk):
                     print("DEBUG: Se detectó una playlist vacía o no válida.")
                     error_message = "La URL corresponde a una lista vacía o no válida."
                     info = None
+            
+            # Enhance SoundCloud data to prevent formatting errors
+            if info:
+                try:
+                    info = self._enhance_soundcloud_info(info)
+                    print("DEBUG: Datos de SoundCloud mejorados exitosamente")
+                except Exception as e:
+                    print(f"DEBUG: Error al mejorar datos de SoundCloud: {e}")
+                    # Continue with original info if enhancement fails
             self.progress_bar.stop()
             if not info or error_message:
                 self.analysis_is_complete = False
@@ -5707,7 +6048,7 @@ class MainWindow(ctk.CTk):
             if format_type == 'VIDEO':
                 is_combined = acodec != 'none' and acodec is not None
                 fps = f.get('fps')
-                fps_tag = f"{fps:.0f}" if fps else ""
+                fps_tag = self._safe_format_number(fps, "", 0)
                 label_base = f"{f.get('height', 'Video')}p{fps_tag} ({ext}"
                 label_codecs = f", {vcodec}+{acodec}" if is_combined else f", {vcodec}"
                 label_tag = " [Combinado]" if is_combined else ""
@@ -5739,7 +6080,11 @@ class MainWindow(ctk.CTk):
                 drc_tag = " (DRC)" if 'DRC' in note else ""
                 protocol = f.get('protocol', '')
                 protocol_tag = " [Streaming]" if 'm3u8' in protocol else ""
-                label = f"{lang_prefix}{abr:.0f}kbps ({acodec}, {ext}){drc_tag}{protocol_tag}" if abr else f"{lang_prefix}Audio ({acodec}, {ext}){drc_tag}{protocol_tag}"
+                if abr and abr is not None:
+                    abr_formatted = self._safe_format_number(abr, "0", 0)
+                    label = f"{lang_prefix}{abr_formatted}kbps ({acodec}, {ext}){drc_tag}{protocol_tag}"
+                else:
+                    label = f"{lang_prefix}Audio ({acodec}, {ext}){drc_tag}{protocol_tag}"
                 if acodec in self.EDITOR_FRIENDLY_CRITERIA["compatible_acodecs"]: label += " ✨"
                 else: label += " ⚠️"
                 audio_entries.append({'label': label, 'format': f, 'sort_priority': size_sort_priority})
